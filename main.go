@@ -21,30 +21,23 @@ var numChannels = flag.Int("c", 4, "num of parallel channels")
 
 // MaxSQLConnection represents the maximum number of SQL Connection.
 // MySQL allows only 150 connections per session.
-const MaxSQLConnection = 140
+const (
+	MaxSQLConnection = 140
+	dsn              = "root:@tcp(127.0.0.1:3306)/konigle?charset=utf8mb4"
+	dialect          = "mysql"
+)
 
 func main() {
-	start := time.Now()
 	flag.Parse()
 	fmt.Print(strings.Join(flag.Args(), "\n"))
 	if *filename == "REQUIRED" {
 		return
 	}
 
-	csvfile, err := os.Open(*filename)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	defer csvfile.Close()
-
-	reader := csv.NewReader(csvfile)
-	reader.Comma = ','
-
 	// --------------------------------------------------------------------------
 	// database connection setup
 	// --------------------------------------------------------------------------
-	db, err := sql.Open("mysql", "root:@tcp(127.0.0.1:3306)/konigle?charset=utf8mb4")
+	db, err := sql.Open(dialect, dsn)
 	if err != nil {
 		log.Fatal(err.Error())
 		return
@@ -56,18 +49,40 @@ func main() {
 		log.Fatal(err.Error())
 		return
 	}
+
 	// set max idle connections
 	db.SetMaxIdleConns(MaxSQLConnection)
 	defer db.Close()
 	println("Successfully Connected to Database!")
+
+	if strings.Contains(*filename, ".json") {
+		// process as json
+		println("I think we should process this as json")
+	} else {
+		// we got a csv files
+		processCSVFile(*filename, db)
+	}
+}
+
+func processCSVFile(file string, db *sql.DB) {
+	start := time.Now()
+
+	csvfile, err := os.Open(file)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer csvfile.Close()
+
+	reader := csv.NewReader(csvfile)
+	reader.Comma = ','
 
 	i := 0
 	ch := make(chan []string)
 	var wg sync.WaitGroup
 
 	// insert query
-	sqlQuery := "INSERT INTO transactions(id, invoice_number, time, customer, amount) VALUES (?, ?, ?, ?, ?);"
-
+	sqlQuery := "INSERT INTO transactions(id, invoice_number, time, customer, amount, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?);"
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -81,7 +96,7 @@ func main() {
 		wg.Add(1)
 		go func(r []string, i int) {
 			defer wg.Done()
-			processData(sqlQuery, r, db)
+			saveToDatabase(sqlQuery, r, db)
 			ch <- r
 		}(record, i)
 
@@ -104,7 +119,7 @@ func main() {
 	fmt.Printf("\n%2fs", time.Since(start).Seconds())
 }
 
-func processData(sqlQuery string, r []string, db *sql.DB) {
+func saveToDatabase(sqlQuery string, r []string, db *sql.DB) {
 	time.Sleep(time.Duration(1000+rand.Intn(8000)) * time.Millisecond)
 	id := r[0]
 	invoiceNumber := r[1]
@@ -112,7 +127,8 @@ func processData(sqlQuery string, r []string, db *sql.DB) {
 	customer := r[3]
 	amount := r[4]
 
-	log.Printf("\n ID: %v -> INVOICE NUMBER: %v -> TRANSACTION TIME: %v -> CUSTOMER: %v -> AMOUNT: %v \n", id, invoiceNumber, transactionTime, customer, amount)
+	createdAt := time.Now()
+	updatedAt := time.Now()
 
 	// save to database
 	if len(r) <= 0 {
@@ -132,11 +148,11 @@ func processData(sqlQuery string, r []string, db *sql.DB) {
 
 	defer stmt.Close()
 
-	_, err = stmt.Exec(id, invoiceNumber, transactionTime, customer, amount)
-	log.Println(err)
+	_, err = stmt.Exec(id, invoiceNumber, transactionTime, customer, amount, createdAt, updatedAt)
 	if err != nil {
+		log.Fatalf("There was an error inserting: %v due to: %v", customer, err)
 		return
 	}
 
-	// fmt.Printf("\r\t\t| proc %d", i)
+	tx.Commit()
 }
