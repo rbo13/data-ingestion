@@ -31,6 +31,7 @@ func main() {
 	flag.Parse()
 	fmt.Print(strings.Join(flag.Args(), "\n"))
 	if *filename == "REQUIRED" {
+		log.Fatal("File is required")
 		return
 	}
 
